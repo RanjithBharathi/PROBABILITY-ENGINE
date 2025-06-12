@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PROBIO - THE PROBABILTY ENGINE</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: "Inter", sans-serif;
+        }
+        /* Style for the video element to maintain aspect ratio */
+        #webcamVideo {
+             max-width: 100%;
+             height: auto;
+             border-radius: 0.5rem; /* rounded-md */
+             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); /* shadow-md */
+        }
+         /* Style for the canvas element, used to capture frames */
+         #captureCanvas {
+             display: none; /* Hide the canvas */
+         }
+
+         /* Style for the microphone button */
+         #recordButton {
+             transition: background-color 0.2s ease-in-out;
+         }
+
+         #recordButton.recording {
+             background-color: #ef4444; /* Tailwind red-500 */
+             animation: pulse 1.5s infinite;
+         }
+
+         @keyframes pulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); /* red-500 with opacity */
+            }
+            70% {
+                box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+            }
+            100% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+         }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white p-8 rounded-lg shadow-lg w-full max-w-lg text-center">
+        <h1 class="text-2xl font-bold mb-4 text-gray-800">PROBIO - THE PROBABILTY ENGINE</h1>
+        <p class="text-gray-600 mb-6">Allow webcam and microphone access to start live predictions.</p>
+
+        <div class="mb-6">
+            <video id="webcamVideo" autoplay playsinline></video>
+            <canvas id="captureCanvas"></canvas> </div>
+
+        <div class="mb-6 flex flex-col items-center space-y-4">
+             <button id="startButton" class="px-6 py-3 bg-green-600 text-white font-semibold rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2">
+                 Start Live Feed 
+             </button>
+
+             <button id="recordButton" class="px-6 py-3 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                  Speak 
+             </button>
+             <p id="voiceStatus" class="text-gray-600 text-sm"></p>
+        </div>
+
+
+        <div id="predictionResult" class="mt-6 p-4 border border-gray-200 rounded-md bg-gray-50 text-left" style="display: none;">
+            <h2 class="text-xl font-semibold mb-3 text-gray-700">Live Prediction:</h2>
+            <p class="mb-2"><strong>Predicted Label:</strong> <span id="predictedLabel" class="font-medium text-blue-700"></span></p>
+            <p class="mb-3"><strong>Confidence:</strong> <span id="confidenceScore" class="font-medium text-green-700"></span></p>
+             <p class="mb-2"><strong>Voice Command:</strong> <span id="voiceCommandDisplay" class="font-medium text-purple-700">N/A</span></p>
+
+
+            <h3 class="text-lg font-semibold mb-2 text-gray-700">Probabilities:</h3>
+            <ul id="probabilitiesList" class="list-disc list-inside text-gray-600 max-h-40 overflow-y-auto">
+                </ul>
+             <p id="noPoseMessage" class="text-red-600 font-semibold mt-2" style="display: none;">Waiting for valid pose data...</p>
+        </div>
+
+         <div id="loadingIndicator" class="mt-4 text-blue-600 font-semibold" style="display: none;">
+            Starting live feed...
+        </div>
+
+         <div id="errorMessage" class="mt-4 text-red-600 font-semibold" style="display: none;">
+             An error occurred. Please try again.
+         </div>
+
+    </div>
+
+    <script>
+        console.log("DEBUG: Script block started."); // DEBUG PRINT
+
+        const webcamVideo = document.getElementById('webcamVideo');
+        const captureCanvas = document.getElementById('captureCanvas');
+        const startButton = document.getElementById('startButton');
+        const recordButton = document.getElementById('recordButton');
+        const voiceStatus = document.getElementById('voiceStatus');
+        const predictionResultDiv = document.getElementById('predictionResult');
+        const predictedLabelSpan = document.getElementById('predictedLabel');
+        const confidenceScoreSpan = document.getElementById('confidenceScore');
+        const voiceCommandDisplaySpan = document.getElementById('voiceCommandDisplay');
+        const probabilitiesList = document.getElementById('probabilitiesList');
+        const probabilitiesHeading = document.querySelector('#predictionResult h3'); // Get the heading
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const errorMessageDiv = document.getElementById('errorMessage');
+        const noPoseMessage = document.getElementById('noPoseMessage');
+
+         console.log("DEBUG: All elements fetched."); // DEBUG PRINT
+
+
+        let mediaRecorder; // For recording audio
+        let audioChunks = []; // To store audio data
+        let mediaStream = null; // To hold the combined webcam and microphone stream
+        let frameInterval = null; // Interval for sending video frames
+        let predictionInterval = null; // Interval for requesting predictions
+
+        const frameRate = 5; // Send 5 frames per second
+        const predictionRate = 1; // Request prediction ~1 time per second
+
+        console.log("DEBUG: Variables initialized."); // DEBUG PRINT
+
+
+        // --- Start Webcam and Microphone ---
+        if (startButton) { // Check if startButton exists
+             startButton.addEventListener('click', async () => {
+                 console.log("DEBUG: Start button clicked."); // DEBUG PRINT
+                 loadingIndicator.textContent = 'Requesting permissions...';
+                 loadingIndicator.style.display = 'block';
+                 errorMessageDiv.style.display = 'none';
+                 predictionResultDiv.style.display = 'none';
+                 startButton.disabled = true;
+                 recordButton.disabled = true;
+                 voiceStatus.textContent = 'Initializing...';
+
+                 try {
+                     console.log("DEBUG: Requesting media devices (video and audio)..."); // DEBUG PRINT
+                     // Request both video and audio streams
+                     mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+
+                     webcamVideo.srcObject = mediaStream;
+
+                     // Wait for the video to load and play
+                     webcamVideo.onloadedmetadata = async () => {
+                         try {
+                             await webcamVideo.play();
+                             console.log("DEBUG: Webcam video started."); // DEBUG PRINT
+                             loadingIndicator.textContent = 'Live feed started.';
+                             setTimeout(() => loadingIndicator.style.display = 'none', 1500); // Hide after a bit
+
+                             predictionResultDiv.style.display = 'block'; // Show prediction area
+                             noPoseMessage.style.display = 'block'; // Initially show waiting message
+                             predictedLabelSpan.parentElement.style.display = 'none';
+                             confidenceScoreSpan.parentElement.style.display = 'none';
+                             // Probabilities heading and list are now visible by default in HTML
+
+
+                             // Start sending video frames to the backend
+                             startSendingFrames();
+                             console.log("DEBUG: Started sending frames."); // DEBUG PRINT
+
+                             // Initialize MediaRecorder for audio using the same stream
+                             // Note: For `audio/wav`, browser support is limited.
+                             // Consider `audio/webm` if `audio/wav` causes issues.
+                             // const options = MediaRecorder.isTypeSupported('audio/wav; codecs=pcm') ? { mimeType: 'audio/wav; codecs=pcm' } : {};
+                             // mediaRecorder = new MediaRecorder(mediaStream, options);
+                             mediaRecorder = new MediaRecorder(mediaStream); // Uses browser default, likely webm
+
+
+                             mediaRecorder.ondataavailable = event => {
+                                 if (event.data.size > 0) {
+                                     audioChunks.push(event.data);
+                                 }
+                             };
+
+                             mediaRecorder.onstop = () => {
+                                 console.log("DEBUG: MediaRecorder stopped. Sending audio."); // DEBUG PRINT
+                                 // The actual MIME type of the blob will depend on what the browser recorded.
+                                 // Sending as 'audio/wav' here is an instruction to the server about desired format.
+                                 // Backend might need to convert if it receives webm/ogg.
+                                 const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+                                 console.log(`DEBUG: Audio blob type: ${audioBlob.type}, size: ${audioBlob.size}`);
+                                 if (audioBlob.size > 0) {
+                                     sendAudioToBackend(audioBlob);
+                                 } else {
+                                     console.log("DEBUG: Audio blob is empty, not sending.");
+                                     voiceStatus.textContent = 'No audio captured. Try again.';
+                                 }
+                                 audioChunks = []; // Clear chunks for next recording
+                                 voiceStatus.textContent = 'Processing command...';
+                             };
+
+                             recordButton.disabled = false; // Enable record button
+                             voiceStatus.textContent = 'Press the button to speak.';
+                             console.log("DEBUG: MediaRecorder initialized, record button enabled."); // DEBUG PRINT
+                         } catch (playError) {
+                             console.error('Error playing video:', playError);
+                             errorMessageDiv.textContent = 'Error starting video playback. Please check camera.';
+                             errorMessageDiv.style.display = 'block';
+                             loadingIndicator.style.display = 'none';
+                             startButton.disabled = false;
+                         }
+                     };
+
+                 } catch (err) {
+                     console.error('Error accessing media devices:', err);
+                     errorMessageDiv.textContent = 'Error accessing webcam or microphone. Please ensure permissions are granted and try again.';
+                     errorMessageDiv.style.display = 'block';
+                     loadingIndicator.style.display = 'none';
+                     startButton.disabled = false; // Re-enable start button on error
+                 }
+            });
+        } else {
+            console.error("Error: Start button element not found!"); // DEBUG PRINT
+            errorMessageDiv.textContent = 'Initialization error: Start button missing.';
+            errorMessageDiv.style.display = 'block';
+        }
+
+
+        // --- Send Video Frames to Backend ---
+        function startSendingFrames() {
+            const context = captureCanvas.getContext('2d');
+            if (frameInterval) clearInterval(frameInterval); // Clear existing interval
+            if (predictionInterval) clearInterval(predictionInterval); // Clear existing interval
+
+            frameInterval = setInterval(() => {
+                if (webcamVideo.readyState >= 2 && !webcamVideo.paused && !webcamVideo.ended) { // enough data and playing
+                    // Set canvas dimensions to match video feed
+                    captureCanvas.width = webcamVideo.videoWidth;
+                    captureCanvas.height = webcamVideo.videoHeight;
+
+                    // Draw the current video frame onto the canvas
+                    context.drawImage(webcamVideo, 0, 0, captureCanvas.width, captureCanvas.height);
+
+                    // Convert canvas content to a Blob (PNG format)
+                    captureCanvas.toBlob(blob => {
+                        if (blob) {
+                            sendFrameToBackend(blob);
+                        }
+                    }, 'image/png'); // Use PNG for better quality if needed, or jpeg for smaller size
+
+                }
+            }, 1000 / frameRate); // Send frames at the specified frameRate
+
+            // Start requesting predictions periodically
+            predictionInterval = setInterval(requestPrediction, 1000 / predictionRate);
+        }
+
+        async function sendFrameToBackend(frameBlob) {
+            const formData = new FormData();
+            formData.append('frame', frameBlob, 'frame.png'); // 'frame' must match the key in app.py
+
+            try {
+                // Use fetch to send the frame data
+                const response = await fetch('/process_frame', {
+                    method: 'POST',
+                    body: formData
+                });
+                // We don't need to process the response immediately, just ensure it was sent
+                if (!response.ok) {
+                    console.error('Error sending frame:', response.status, response.statusText);
+                } else {
+                    // console.log("DEBUG: Frame sent successfully");
+                }
+            } catch (error) {
+                console.error('Network error sending frame:', error);
+                // Optionally, stop sending frames if network is consistently down
+            }
+        }
+
+        // --- Voice Recording and Sending ---
+        if (recordButton) { // Check if recordButton exists
+            const startRecording = () => {
+                if (mediaRecorder && mediaRecorder.state === 'inactive') {
+                    audioChunks = []; // Clear previous recordings
+                    try {
+                        mediaRecorder.start();
+                        recordButton.classList.add('recording');
+                        voiceStatus.textContent = 'Recording... Speak now!';
+                        console.log("DEBUG: MediaRecorder started.");
+                    } catch (e) {
+                        console.error("Error starting mediaRecorder: ", e);
+                        voiceStatus.textContent = 'Error starting recording.';
+                    }
+                } else if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    console.log("DEBUG: Already recording.");
+                } else {
+                    console.warn("DEBUG: MediaRecorder not ready or in an unexpected state:", mediaRecorder ? mediaRecorder.state : 'null');
+                    voiceStatus.textContent = 'Recorder not ready. Please wait or restart live feed.';
+                }
+            };
+
+            const stopRecording = () => {
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    mediaRecorder.stop(); // This will trigger 'onstop' and 'ondataavailable'
+                    recordButton.classList.remove('recording');
+                    // voiceStatus.textContent = 'Processing command...'; // Set in onstop
+                    console.log("DEBUG: MediaRecorder stopping.");
+                }
+            };
+
+            recordButton.addEventListener('mousedown', () => {
+                console.log("DEBUG: Record button mousedown."); // DEBUG PRINT
+                startRecording();
+            });
+
+            recordButton.addEventListener('mouseup', () => {
+                console.log("DEBUG: Record button mouseup."); // DEBUG PRINT
+                stopRecording();
+            });
+
+            // Also handle touch events for mobile
+            recordButton.addEventListener('touchstart', (event) => {
+                event.preventDefault(); // Prevent default touch behavior (like zoom or scroll)
+                console.log("DEBUG: Record button touchstart."); // DEBUG PRINT
+                startRecording();
+            });
+
+            recordButton.addEventListener('touchend', (event) => {
+                event.preventDefault(); // Prevent default touch behavior
+                console.log("DEBUG: Record button touchend."); // DEBUG PRINT
+                stopRecording();
+            });
+        } else {
+            console.error("Error: Record button element not found!"); // DEBUG PRINT
+        }
+
+
+
+        async function sendAudioToBackend(audioBlob) {
+            console.log("DEBUG: Sending audio to backend."); // DEBUG PRINT
+            voiceCommandDisplaySpan.textContent = "Processing audio...";
+            const formData = new FormData();
+            // The third parameter 'filename' is important for backend to recognize the file.
+            // Use the blob's actual mimeType if available for more accurate backend processing.
+            const filename = audioBlob.type.includes('wav') ? 'command.wav' : 'command.webm';
+            formData.append('audio', audioBlob, filename); // 'audio' must match the key in app.py
+
+            try {
+                const response = await fetch('/process_audio', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    console.log('Audio sent successfully, server response:', result);
+                    voiceStatus.textContent = 'Command processed.';
+                    // Assuming backend returns a 'transcript' or similar field
+                    if (result.transcript) {
+                        voiceCommandDisplaySpan.textContent = result.transcript;
+                    } else if (result.voice_command) { // Fallback to existing key if transcript not present
+                        voiceCommandDisplaySpan.textContent = result.voice_command;
+                    } else {
+                        voiceCommandDisplaySpan.textContent = "Command sent (no text returned).";
+                    }
+                } else {
+                    console.error('Error sending audio:', response.status, response.statusText, result);
+                    voiceStatus.textContent = `Error: ${result.error || 'Could not process command.'}`;
+                    voiceCommandDisplaySpan.textContent = "Error processing command.";
+                }
+            } catch (error) {
+                console.error('Network error sending audio:', error);
+                voiceStatus.textContent = 'Network error sending command.';
+                voiceCommandDisplaySpan.textContent = "Network error.";
+            } finally {
+                 setTimeout(() => {
+                     if (voiceStatus.textContent.startsWith('Command processed') || voiceStatus.textContent.startsWith('Error')) {
+                         voiceStatus.textContent = 'Press the button to speak.';
+                     }
+                 }, 3000);
+            }
+        }
+
+        // --- Request Prediction from Backend ---
+        async function requestPrediction() {
+            if (!mediaStream || !mediaStream.active) {
+                console.log("DEBUG: Prediction request skipped, media stream not active.");
+                return; // Don't request if stream is dead
+            }
+            try {
+                const response = await fetch('/predict_live', {
+                    method: 'POST' // We send a POST request, but no body needed as backend uses latest state
+                });
+                const result = await response.json();
+
+                if (response.ok) {
+                    // Always update voice command if present in response
+                    if (result.voice_command) {
+                        voiceCommandDisplaySpan.textContent = result.voice_command;
+                    }
+
+
+                    if (result.prediction === "Waiting for pose data..." || result.error === "No pose data available yet.") {
+                        noPoseMessage.textContent = 'Waiting for valid pose data...';
+                        noPoseMessage.style.display = 'block';
+                        predictedLabelSpan.parentElement.style.display = 'none';
+                        confidenceScoreSpan.parentElement.style.display = 'none';
+                        // --- Hide Probabilities List ---
+                        probabilitiesHeading.style.display = 'none'; // Hide heading
+                        probabilitiesList.style.display = 'none'; // Hide list
+                        probabilitiesList.innerHTML = ''; // Clear previous list
+                        // --- End Hide Probabilities List ---
+
+                    } else if (result.prediction === "No pose detected in image." || result.error === "No pose detected in the latest frame.") {
+                        noPoseMessage.textContent = 'No pose detected in the last frame.';
+                        noPoseMessage.style.display = 'block';
+                        predictedLabelSpan.parentElement.style.display = 'none';
+                        confidenceScoreSpan.parentElement.style.display = 'none';
+                         // --- Hide Probabilities List ---
+                        probabilitiesHeading.style.display = 'none'; // Hide heading
+                        probabilitiesList.style.display = 'none'; // Hide list
+                        probabilitiesList.innerHTML = ''; // Clear previous list
+                        // --- End Hide Probabilities List ---
+
+                    }
+                    else if (result.prediction && result.probabilities) {
+                        noPoseMessage.style.display = 'none'; // Hide waiting message
+                        predictedLabelSpan.parentElement.style.display = 'block';
+                        confidenceScoreSpan.parentElement.style.display = 'block';
+                        // --- Show Probabilities List ---
+                        probabilitiesHeading.style.display = 'block'; // Show heading
+                        probabilitiesList.style.display = 'block'; // Show list
+                        probabilitiesList.innerHTML = ''; // Clear previous list
+                        // Populate the list with all probabilities (backend sends them sorted)
+                        for (const label in result.probabilities) {
+                            if (result.probabilities.hasOwnProperty(label)) {
+                                const li = document.createElement('li');
+                                li.textContent = `${label}: ${parseFloat(result.probabilities[label]).toFixed(2)}`;
+                                probabilitiesList.appendChild(li);
+                            }
+                        }
+                        // --- End Show Probabilities List ---
+
+
+                        predictedLabelSpan.textContent = result.prediction;
+
+                        let predictedConfidence = 0.0;
+                        if (result.probabilities.hasOwnProperty(result.prediction)) {
+                            predictedConfidence = parseFloat(result.probabilities[result.prediction]);
+                        }
+                        confidenceScoreSpan.textContent = predictedConfidence.toFixed(2);
+
+                        // Voice command is updated above if present in response
+
+
+                    } else if (result.error) {
+                        console.error('Prediction error from backend:', result.error);
+                        noPoseMessage.textContent = `Prediction error: ${result.error}`;
+                        noPoseMessage.style.display = 'block';
+                        predictedLabelSpan.parentElement.style.display = 'none';
+                        confidenceScoreSpan.parentElement.style.display = 'none';
+                         // --- Hide Probabilities List ---
+                        probabilitiesHeading.style.display = 'none'; // Hide heading
+                        probabilitiesList.style.display = 'none'; // Hide list
+                        probabilitiesList.innerHTML = ''; // Clear previous list
+                        // --- End Hide Probabilities List ---
+                    }
+                } else {
+                    console.error('Error requesting prediction:', response.status, response.statusText, result);
+                    noPoseMessage.textContent = `Prediction request failed: ${response.statusText}`;
+                    noPoseMessage.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Network error requesting prediction:', error);
+                noPoseMessage.textContent = 'Network error during prediction.';
+                noPoseMessage.style.display = 'block';
+            }
+        }
+
+
+        // --- Cleanup on page close/refresh ---
+        window.addEventListener('beforeunload', () => {
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                console.log("DEBUG: MediaStream tracks stopped.");
+            }
+            if (frameInterval) {
+                clearInterval(frameInterval);
+            }
+            if (predictionInterval) {
+                clearInterval(predictionInterval);
+            }
+        });
+
+
+        // Initial state
+        recordButton.disabled = true; // Disable record button until feed starts
+        voiceStatus.textContent = 'Press Start Live Feed first.';
+
+        console.log("DEBUG: Initial state set. Ready."); // DEBUG PRINT
+    </script>
+</body>
+</html>
